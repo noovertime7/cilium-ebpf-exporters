@@ -1,0 +1,8 @@
+{
+  "files.associations": {
+    "bpf_core_read.h": "c",
+    "bpf_helpers.h": "c",
+    "vmlinux.h": "c",
+    "maps.bpf.h": "c"
+  }
+}
