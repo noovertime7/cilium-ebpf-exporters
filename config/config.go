@@ -11,11 +11,12 @@ import (
 
 // Config describes how to configure and extract metrics
 type Config struct {
-	Name    string   `yaml:"name"`
-	Metrics Metrics  `yaml:"metrics"`
-	Tracing Tracing  `yaml:"tracing"`
-	Kaddrs  []string `yaml:"kaddrs"`
-	BPFPath string
+	Name        string   `yaml:"name"`
+	Metrics     Metrics  `yaml:"metrics"`
+	Tracing     Tracing  `yaml:"tracing"`
+	Kaddrs      []string `yaml:"kaddrs"`
+	BPFPath     string
+	ProgramType ProgramType `yaml:"program_type"`
 }
 
 // Metrics is a collection of metrics attached to a program
@@ -86,6 +87,20 @@ const (
 	HistogramBucketLinear HistogramBucketType = "linear"
 	// HistogramBucketFixed means histogram with fixed user-defined keys
 	HistogramBucketFixed HistogramBucketType = "fixed"
+)
+
+// ProgramType defines the type of eBPF program
+type ProgramType string
+
+const (
+	// KProbe represents a kprobe/kretprobe program
+	KProbe ProgramType = "kprobe"
+	// TracePoint represents a tracepoint program
+	TracePoint ProgramType = "tracepoint"
+	// SocketFilter represents a socket filter program
+	SocketFilter ProgramType = "socket_filter"
+	// CGroupSkb represents a cgroup skb program
+	CGroupSkb ProgramType = "cgroup_skb"
 )
 
 // ParseConfigs parses the named configs from the provided configs directory
