@@ -1,0 +1,13 @@
+metrics:
+  histograms:
+    - name: sys_execve_count
+      help: sys_execve_count histogram
+      bucket_type: exp2
+      bucket_min: 0
+      bucket_max: 27
+      bucket_multiplier: 0.000001 # microseconds to seconds
+      labels:
+        - name: count
+          size: 4
+          decoders:
+            - name: majorminor
