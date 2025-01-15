@@ -6,9 +6,13 @@ metrics:
       bucket_type: exp2
       bucket_min: 0
       bucket_max: 27
-      bucket_multiplier: 0.000001 # microseconds to seconds
+      bucket_multiplier: 0.000001
       labels:
         - name: count
           size: 4
           decoders:
             - name: majorminor
+kaddrs:
+  - "__x64_sys_execve"
+  - "do_execve"
+  - "sys_execve"

@@ -1,16 +1,29 @@
+# Compiler and flags
 CLANG ?= clang
-CFLAGS ?= -O2 -g -Wall -Werror
+CFLAGS := -O2 -g -Wall -Werror
 
+# eBPF specific flags
+EBPF_CFLAGS := -target bpf \
+	-D__TARGET_ARCH_x86 \
+	-I/usr/include/x86_64-linux-gnu \
+	-I. \
+	-I./headers \
+	-c
 
-EBPF_ROOT = /home/ebpf/code/clium-ebpf-exporters
-MY_HEADERS = $(EBPF_ROOT)/headers
+# Source and output directories
+EXAMPLES_DIR := examples
+SOURCES := $(wildcard $(EXAMPLES_DIR)/*.c)
+OBJECTS := $(SOURCES:%.c=%.bpf.o)
 
-build: generate
-	go build -o bin/biolatency cmd/main.go
+# Default target
+all: $(OBJECTS)
 
+# Rule to build .bpf.o files from .c files
+%.bpf.o: %.c
+	$(CLANG) $(EBPF_CFLAGS) $(CFLAGS) -o $@ $<
 
-generate: export BPF_CLANG := $(CLANG)
-generate: export BPF_CFLAGS := $(CFLAGS)
-generate: export BPF_HEADERS=$(MY_HEADERS)
-generate:
-	go generate ./...
+# Clean target
+clean:
+	rm -f $(OBJECTS)
+
+.PHONY: all clean

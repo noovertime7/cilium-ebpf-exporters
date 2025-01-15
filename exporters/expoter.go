@@ -156,9 +156,17 @@ func (e *Exporter) attachProgram(cfg config.Config, progName string, prog *ebpf.
 
 	switch cfg.ProgramType {
 	case config.KProbe:
-		l, err = link.Kprobe(progName, prog, nil)
+		// 尝试配置中定义的所有可能的函数名
+		var lastErr error
+		for _, kaddr := range cfg.Kaddrs {
+			l, err = link.Kprobe(kaddr, prog, nil)
+			if err == nil {
+				break
+			}
+			lastErr = err
+		}
 		if err != nil {
-			return fmt.Errorf("failed to attach kprobe: %v", err)
+			return fmt.Errorf("failed to attach kprobe to any of the specified functions: %v", lastErr)
 		}
 
 	case config.TracePoint:

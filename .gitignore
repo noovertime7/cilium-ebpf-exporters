@@ -1,0 +1,15 @@
+# IDE directories
+.idea/
+.vscode/
+
+# Binary files
+*.o
+bin/
+*.bpf.o
+
+# Go files
+vendor/
+go.sum
+
+# Debug files
+*.log 
