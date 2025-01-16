@@ -11,7 +11,7 @@ metrics:
         - name: count
           size: 4
           decoders:
-            - name: majorminor
+            - name: uint
 kaddrs:
   - "__x64_sys_execve"
   - "do_execve"

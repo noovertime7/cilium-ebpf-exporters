@@ -1,7 +1,11 @@
 package exporters
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"log"
+	"net/http"
 	"strings"
 
 	"github.com/cilium/ebpf"
@@ -9,6 +13,7 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/noovertime7/cilium-ebpf-exporters/config"
 	"github.com/noovertime7/cilium-ebpf-exporters/decoder"
+	"github.com/noovertime7/cilium-ebpf-exporters/util"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -233,4 +238,160 @@ func validateMaps(module *ebpf.Collection, cfg config.Config) error {
 	}
 
 	return nil
+}
+
+// MapsHandler is a debug handler to print raw values of kernel maps
+func (e *Exporter) MapsHandler(w http.ResponseWriter, r *http.Request) {
+	maps, err := e.exportMaps()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Header().Add("Content-type", "text/plain")
+		if _, err = fmt.Fprintf(w, "%s\n", err); err != nil {
+			log.Printf("Error returning error to client %q: %s", r.RemoteAddr, err)
+			return
+		}
+		return
+	}
+
+	w.Header().Add("Content-type", "text/plain")
+
+	buf := []byte{}
+
+	for cfg, maps := range maps {
+		buf = append(buf, fmt.Sprintf("## Config: %s\n\n", cfg)...)
+
+		for name, m := range maps {
+			buf = append(buf, fmt.Sprintf("### Map: %s\n\n", name)...)
+
+			buf = append(buf, "```\n"...)
+			for _, row := range m {
+				buf = append(buf, fmt.Sprintf("%#v (labels: %v) -> %.0f\n", row.raw, row.labels, row.value)...)
+			}
+			buf = append(buf, "```\n\n"...)
+		}
+	}
+
+	if _, err = w.Write(buf); err != nil {
+		log.Printf("Error returning map contents to client %q: %s", r.RemoteAddr, err)
+	}
+}
+
+func (e Exporter) exportMaps() (map[string]map[string][]metricValue, error) {
+	maps := map[string]map[string][]metricValue{}
+
+	for _, cfg := range e.configs {
+		module := e.modules[cfg.Name]
+		if module == nil {
+			return nil, fmt.Errorf("module for config %q is not attached", cfg.Name)
+		}
+
+		if _, ok := maps[cfg.Name]; !ok {
+			maps[cfg.Name] = map[string][]metricValue{}
+		}
+
+		metricMaps := map[string][]config.Label{}
+
+		for _, counter := range cfg.Metrics.Counters {
+			if counter.Name != "" {
+				metricMaps[counter.Name] = counter.Labels
+			}
+		}
+
+		for _, histogram := range cfg.Metrics.Histograms {
+			if histogram.Name != "" {
+				metricMaps[histogram.Name] = histogram.Labels
+			}
+		}
+
+		for name, labels := range metricMaps {
+			metricValues, err := e.mapValues(e.modules[cfg.Name], name, labels)
+			if err != nil {
+				return nil, fmt.Errorf("error getting values for map %q of config %q: %s", name, cfg.Name, err)
+			}
+
+			maps[cfg.Name][name] = metricValues
+		}
+	}
+
+	return maps, nil
+}
+
+func (e *Exporter) mapValues(coll *ebpf.Collection, name string, labels []config.Label) ([]metricValue, error) {
+	m, ok := coll.Maps[name]
+	if !ok {
+		return nil, fmt.Errorf("failed to retrieve map %q", name)
+	}
+	metricValues, err := readMapValues(m, labels)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve map %q: %v", name, err)
+	}
+
+	for i, mv := range metricValues {
+		raw := mv.raw
+		// If there are no labels, assume a single key of uint32(0)
+		if len(labels) == 0 && bytes.Equal(mv.raw, []byte{0x0, 0x0, 0x0, 0x0}) {
+			metricValues[i].labels = []string{}
+			continue
+		}
+
+		metricValues[i].labels, err = e.decoders.DecodeLabels(raw, name, labels)
+		if err != nil {
+			if errors.Is(err, decoder.ErrSkipLabelSet) {
+				continue
+			}
+
+			return nil, err
+		}
+	}
+
+	return metricValues, nil
+
+}
+
+func readMapValues(ebpfMap *ebpf.Map, labels []config.Label) ([]metricValue, error) {
+	metricValues := []metricValue{}
+
+	var key []byte
+	var value uint64
+
+	// 使用 Iterate 来遍历 map
+	iter := ebpfMap.Iterate()
+	for iter.Next(&key, &value) {
+		mv := metricValue{
+			raw:   make([]byte, len(key)),
+			value: float64(value),
+		}
+		// 复制 key 数据
+		copy(mv.raw, key)
+		metricValues = append(metricValues, mv)
+	}
+
+	if err := iter.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating map: %v", err)
+	}
+
+	return metricValues, nil
+}
+
+// Assuming counter's value type is always u64
+func decodeValue(value []byte) float64 {
+	return float64(util.GetHostByteOrder().Uint64(value))
+}
+
+// metricValue is a row in a kernel map
+type metricValue struct {
+	// raw is a raw key value provided by kernel
+	raw []byte
+	// labels are decoded from the raw key
+	labels []string
+	// value is the kernel map value
+	value float64
+}
+
+// aggregatedMetricValue is a value after aggregation of equal label sets
+type aggregatedMetricValue struct {
+	// labels are decoded from the raw key
+	labels []string
+	// value is the kernel map value
+	value float64
 }

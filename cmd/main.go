@@ -49,14 +49,15 @@ func main() {
 	// if err != nil {
 	// 	log.Fatalf("Error registering exporter: %s", err)
 	// }
-
+	http.HandleFunc("/maps", e.MapsHandler)
 	http.Handle(*metricsPath, promhttp.Handler())
 	http.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		_, err = w.Write([]byte(`<html>
 			<head><title>eBPF Exporter</title></head>
 			<body>
-			<h1>eBPF Exporter</h1>
+			<h1>Cilium eBPF Exporter</h1>
 			<p><a href="` + *metricsPath + `">Metrics</a></p>
+			<p><a href="/maps">Maps</a></p>
 			</body>
 			</html>`))
 		if err != nil {
