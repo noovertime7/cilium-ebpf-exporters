@@ -135,63 +135,102 @@ func (e *Exporter) attachConfig(cfg config.Config) error {
 		return fmt.Errorf("failed to create BPF collection for config %q: %v", cfg.Name, err)
 	}
 
-	// Store the collection
-	e.modules[cfg.Name] = coll
-	e.attachedProgs[cfg.Name] = make(map[*ebpf.Program]bool)
-
 	// Attach all programs in the collection
-	for progName, prog := range coll.Programs {
-		if err := e.attachProgram(cfg, progName, prog); err != nil {
-			return fmt.Errorf("failed to attach program %q in config %q: %v", progName, cfg.Name, err)
-		}
-		e.attachedProgs[cfg.Name][prog] = true
+	attachments, err := e.attachProgram(cfg, coll)
+	if err != nil {
+		return err
 	}
+
+	err = validateMaps(coll, cfg)
+	if err != nil {
+		return fmt.Errorf("error validating maps for config %q: %v", cfg.Name, err)
+	}
+
+	e.attachedProgs[cfg.Name] = attachments
+	e.modules[cfg.Name] = coll
 
 	return nil
 }
 
-func (e *Exporter) attachProgram(cfg config.Config, progName string, prog *ebpf.Program) error {
-	var l link.Link
-	var err error
+func (e *Exporter) attachProgram(cfg config.Config, coll *ebpf.Collection) (map[*ebpf.Program]bool, error) {
+	attached := map[*ebpf.Program]bool{}
 
-	switch cfg.ProgramType {
-	case config.KProbe:
-		// 尝试配置中定义的所有可能的函数名
-		var lastErr error
-		for _, kaddr := range cfg.Kaddrs {
-			l, err = link.Kprobe(kaddr, prog, nil)
-			if err == nil {
-				break
+	for progName, prog := range coll.Programs {
+		var l link.Link
+		var err error
+
+		switch cfg.ProgramType {
+		case config.KProbe:
+			// 尝试配置中定义的所有可能的函数名
+			var lastErr error
+			for _, kaddr := range cfg.Kaddrs {
+				l, err = link.Kprobe(kaddr, prog, nil)
+				if err == nil {
+					attached[prog] = true
+					e.links[cfg.Name] = append(e.links[cfg.Name], l)
+					break
+				}
+				lastErr = err
 			}
-			lastErr = err
-		}
-		if err != nil {
-			return fmt.Errorf("failed to attach kprobe to any of the specified functions: %v", lastErr)
-		}
+			if err != nil {
+				attached[prog] = false
+				return attached, fmt.Errorf("failed to attach kprobe to any of the specified functions: %v", lastErr)
+			}
 
-	case config.TracePoint:
-		// 对于 tracepoint，程序名称格式应该是 "category/name"
-		parts := strings.Split(progName, "/")
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid tracepoint format %q, expected category/name", progName)
+		case config.TracePoint:
+			parts := strings.Split(progName, "/")
+			if len(parts) != 2 {
+				attached[prog] = false
+				return attached, fmt.Errorf("invalid tracepoint format %q, expected category/name", progName)
+			}
+			l, err = link.Tracepoint(parts[0], parts[1], prog, nil)
+			if err != nil {
+				attached[prog] = false
+				return attached, fmt.Errorf("failed to attach tracepoint: %v", err)
+			}
+			attached[prog] = true
+			e.links[cfg.Name] = append(e.links[cfg.Name], l)
+
+		case config.SocketFilter:
+			return attached, fmt.Errorf("socket filter attachment not implemented yet")
+
+		case config.CGroupSkb:
+			return attached, fmt.Errorf("cgroup skb attachment not implemented yet")
+
+		default:
+			return attached, fmt.Errorf("unsupported program type: %s", cfg.ProgramType)
 		}
-		l, err = link.Tracepoint(parts[0], parts[1], prog, nil)
-		if err != nil {
-			return fmt.Errorf("failed to attach tracepoint: %v", err)
-		}
-
-	case config.SocketFilter:
-		// Socket filter 实现...
-		return fmt.Errorf("socket filter attachment not implemented yet")
-
-	case config.CGroupSkb:
-		// CGroup SKB 实现...
-		return fmt.Errorf("cgroup skb attachment not implemented yet")
-
-	default:
-		return fmt.Errorf("unsupported program type: %s", cfg.ProgramType)
 	}
 
-	e.links[cfg.Name] = append(e.links[cfg.Name], l)
+	return attached, nil
+}
+
+func validateMaps(module *ebpf.Collection, cfg config.Config) error {
+	maps := []string{}
+
+	for _, counter := range cfg.Metrics.Counters {
+		if counter.Name != "" && !counter.PerfEventArray {
+			maps = append(maps, counter.Name)
+		}
+	}
+
+	for _, histogram := range cfg.Metrics.Histograms {
+		if histogram.Name != "" {
+			maps = append(maps, histogram.Name)
+		}
+	}
+
+	for _, name := range maps {
+		m, ok := module.Maps[name]
+		if !ok {
+			return fmt.Errorf("failed to get map %q", name)
+		}
+
+		valueSize := m.ValueSize()
+		if valueSize != 8 {
+			return fmt.Errorf("value size for map %q is not expected 8 bytes (u64), it is %d bytes", name, valueSize)
+		}
+	}
+
 	return nil
 }

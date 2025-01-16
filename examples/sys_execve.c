@@ -4,7 +4,7 @@
 
 char __license[] SEC("license") = "Dual MIT/GPL";
 
-struct bpf_map_def SEC("maps") kprobe_map = {
+struct bpf_map_def SEC("maps") sys_execve_count = {
     .type = BPF_MAP_TYPE_ARRAY,
     .key_size = sizeof(u32),
     .value_size = sizeof(u64),
@@ -19,11 +19,11 @@ int kprobe_execve()
 
   bpf_printk("Entering kprobe_execve\n");
 
-  valp = bpf_map_lookup_elem(&kprobe_map, &key);
+  valp = bpf_map_lookup_elem(&sys_execve_count, &key);
   if (!valp)
   {
     bpf_printk("First hit, initializing counter\n");
-    bpf_map_update_elem(&kprobe_map, &key, &initval, BPF_ANY);
+    bpf_map_update_elem(&sys_execve_count, &key, &initval, BPF_ANY);
     return 0;
   }
   
