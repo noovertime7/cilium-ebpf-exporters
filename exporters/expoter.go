@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/cilium/ebpf"
@@ -208,6 +209,197 @@ func (e *Exporter) attachProgram(cfg config.Config, coll *ebpf.Collection) (map[
 	}
 
 	return attached, nil
+}
+
+func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
+	addDescs := func(programName string, name string, help string, labels []config.Label) {
+		if _, ok := e.descs[programName][name]; !ok {
+			labelNames := []string{}
+
+			for _, label := range labels {
+				labelNames = append(labelNames, label.Name)
+			}
+
+			e.descs[programName][name] = prometheus.NewDesc(prometheus.BuildFQName(prometheusNamespace, "", name), help, labelNames, nil)
+		}
+
+		ch <- e.descs[programName][name]
+	}
+
+	ch <- e.enabledConfigsDesc
+	ch <- e.programInfoDesc
+	ch <- e.programAttachedDesc
+
+	for _, cfg := range e.configs {
+		if _, ok := e.descs[cfg.Name]; !ok {
+			e.descs[cfg.Name] = map[string]*prometheus.Desc{}
+		}
+
+		for _, counter := range cfg.Metrics.Counters {
+
+			addDescs(cfg.Name, counter.Name, counter.Help, counter.Labels)
+		}
+
+		for _, histogram := range cfg.Metrics.Histograms {
+			addDescs(cfg.Name, histogram.Name, histogram.Help, histogram.Labels[0:len(histogram.Labels)-1])
+		}
+
+	}
+}
+
+// Collect satisfies prometheus.Collector interface and sends all metrics
+func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
+	for _, cfg := range e.configs {
+		ch <- prometheus.MustNewConstMetric(e.enabledConfigsDesc, prometheus.GaugeValue, 1, cfg.Name)
+	}
+
+	for name, attachments := range e.attachedProgs {
+		for program, attached := range attachments {
+			info, err := extractProgramInfo(program)
+			if err != nil {
+				log.Printf("Error extracting program info for %q in config %q: %v", name, name, err)
+			}
+
+			id := strconv.Itoa(info.id)
+
+			ch <- prometheus.MustNewConstMetric(e.programInfoDesc, prometheus.GaugeValue, 1, name, name, info.tag, id)
+
+			attachedValue := 0.0
+			if attached {
+				attachedValue = 1.0
+			}
+
+			ch <- prometheus.MustNewConstMetric(e.programAttachedDesc, prometheus.GaugeValue, attachedValue, id)
+
+			statsEnabled, err := bpfStatsEnabled()
+			if err != nil {
+				log.Printf("Error checking whether bpf stats are enabled: %v", err)
+			} else {
+				if statsEnabled {
+					ch <- prometheus.MustNewConstMetric(e.programRunTimeDesc, prometheus.CounterValue, info.runTime.Seconds(), id)
+					ch <- prometheus.MustNewConstMetric(e.programRunCountDesc, prometheus.CounterValue, float64(info.runCount), id)
+				}
+			}
+		}
+	}
+
+	e.collectCounters(ch)
+	e.collectHistograms(ch)
+}
+
+// collectCounters sends all known counters to prometheus
+func (e *Exporter) collectCounters(ch chan<- prometheus.Metric) {
+	for _, cfg := range e.configs {
+		for _, counter := range cfg.Metrics.Counters {
+			if counter.PerfEventArray {
+				continue
+			}
+
+			mapValues, err := e.mapValues(e.modules[cfg.Name], counter.Name, counter.Labels)
+			if err != nil {
+				log.Printf("Error getting map %q values for metric %q of config %q: %s", counter.Name, counter.Name, cfg.Name, err)
+				continue
+			}
+
+			aggregatedMapValues := aggregateMapValues(mapValues)
+
+			desc := e.descs[cfg.Name][counter.Name]
+
+			for _, metricValue := range aggregatedMapValues {
+				ch <- prometheus.MustNewConstMetric(desc, prometheus.CounterValue, metricValue.value, metricValue.labels...)
+			}
+		}
+	}
+}
+
+// collectHistograms sends all known histograms to prometheus
+func (e *Exporter) collectHistograms(ch chan<- prometheus.Metric) {
+	for _, cfg := range e.configs {
+		for _, histogram := range cfg.Metrics.Histograms {
+			skip := false
+
+			histograms := map[string]histogramWithLabels{}
+
+			mapValues, err := e.mapValues(e.modules[cfg.Name], histogram.Name, histogram.Labels)
+			if err != nil {
+				log.Printf("Error getting map %q values for metric %q of config %q: %s", histogram.Name, histogram.Name, cfg.Name, err)
+				continue
+			}
+
+			aggregatedMapValues := aggregateMapValues(mapValues)
+
+			// Taking the last label and using int as bucket delimiter, for example:
+			//
+			// Before:
+			// * [sda, read, 1ms] -> 10
+			// * [sda, read, 2ms] -> 2
+			// * [sda, read, 4ms] -> 5
+			//
+			// After:
+			// * [sda, read] -> {1ms -> 10, 2ms -> 2, 4ms -> 5}
+			for _, metricValue := range aggregatedMapValues {
+				labels := metricValue.labels[0 : len(metricValue.labels)-1]
+
+				key := fmt.Sprintf("%#v", labels)
+
+				if _, ok := histograms[key]; !ok {
+					histograms[key] = histogramWithLabels{
+						labels:  labels,
+						buckets: map[float64]uint64{},
+					}
+				}
+
+				leUint, err := strconv.ParseUint(metricValue.labels[len(metricValue.labels)-1], 0, 64)
+				if err != nil {
+					log.Printf("Error parsing float value for bucket %#v in map %q of config %q: %s", metricValue.labels, histogram.Name, cfg.Name, err)
+					skip = true
+					break
+				}
+
+				histograms[key].buckets[float64(leUint)] = uint64(metricValue.value)
+			}
+
+			if skip {
+				continue
+			}
+
+			desc := e.descs[cfg.Name][histogram.Name]
+
+			for _, histogramSet := range histograms {
+				buckets, count, sum, err := transformHistogram(histogramSet.buckets, histogram)
+				if err != nil {
+					log.Printf("Error transforming histogram for metric %q in config %q: %s", histogram.Name, cfg.Name, err)
+					continue
+				}
+
+				ch <- prometheus.MustNewConstHistogram(desc, count, sum, buckets, histogramSet.labels...)
+			}
+		}
+	}
+}
+
+func aggregateMapValues(values []metricValue) []aggregatedMetricValue {
+	aggregated := []aggregatedMetricValue{}
+	mapping := map[string]*aggregatedMetricValue{}
+
+	for _, value := range values {
+		key := strings.Join(value.labels, "|")
+
+		if existing, ok := mapping[key]; !ok {
+			mapping[key] = &aggregatedMetricValue{
+				labels: value.labels,
+				value:  value.value,
+			}
+		} else {
+			existing.value += value.value
+		}
+	}
+
+	for _, value := range mapping {
+		aggregated = append(aggregated, *value)
+	}
+
+	return aggregated
 }
 
 func validateMaps(module *ebpf.Collection, cfg config.Config) error {

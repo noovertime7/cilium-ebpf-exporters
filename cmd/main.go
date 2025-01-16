@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/prometheus/client_golang/prometheus"
 	"log"
 	"net/http"
 	"strconv"
@@ -45,10 +46,10 @@ func main() {
 		log.Fatalf("Error attaching exporter: %s", err)
 	}
 
-	// err = prometheus.Register(e)
-	// if err != nil {
-	// 	log.Fatalf("Error registering exporter: %s", err)
-	// }
+	err = prometheus.Register(e)
+	if err != nil {
+		log.Fatalf("Error registering exporter: %s", err)
+	}
 	http.HandleFunc("/maps", e.MapsHandler)
 	http.Handle(*metricsPath, promhttp.Handler())
 	http.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
