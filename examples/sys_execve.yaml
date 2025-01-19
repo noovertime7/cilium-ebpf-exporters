@@ -1,6 +1,6 @@
 program_type: kprobe
 metrics:
-  histograms:
+  counters:
     - name: sys_execve_count
       help: sys_execve_count histogram
       bucket_type: exp2
@@ -8,10 +8,14 @@ metrics:
       bucket_max: 27
       bucket_multiplier: 0.000001
       labels:
-        - name: count
-          size: 4
+#        - name: pid
+#          size: 4
+#          decoders:
+#            - name: uint
+        - name: name
+          size: 16
           decoders:
-            - name: uint
+            - name: string
 kaddrs:
   - "__x64_sys_execve"
   - "do_execve"

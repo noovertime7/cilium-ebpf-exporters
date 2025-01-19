@@ -1,29 +1,43 @@
 // go:build ignore
 
 #include "common.h"
+// Max number of disks we expect to see on the host
+#define MAX_DISKS 255
+
+// 27 buckets for latency, max range is 33.6s .. 67.1s
+#define MAX_LATENCY_SLOT 27
 
 char __license[] SEC("license") = "Dual MIT/GPL";
 
-struct bpf_map_def SEC("maps") sys_execve_count = {
-    .type = BPF_MAP_TYPE_ARRAY,
-    .key_size = sizeof(u32),
-    .value_size = sizeof(u64),
-    .max_entries = 1,
+struct sys_execve_info
+{
+  char name[16];
 };
+
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, (MAX_LATENCY_SLOT + 1) * MAX_DISKS);
+    __type(key, struct sys_execve_info);
+    __type(value, u64);
+} sys_execve_count SEC(".maps");
+
 
 SEC("kprobe/__x64_sys_execve")
 int kprobe_execve()
 {
-  u32 key = 0;
   u64 initval = 1, *valp;
+  struct sys_execve_info info = {};
 
-  bpf_printk("Entering kprobe_execve\n");
+  // 获取进程名
+  bpf_get_current_comm(&info.name, sizeof(info.name));
 
-  valp = bpf_map_lookup_elem(&sys_execve_count, &key);
+
+  valp = bpf_map_lookup_elem(&sys_execve_count, &info);
   if (!valp)
   {
     bpf_printk("First hit, initializing counter\n");
-    bpf_map_update_elem(&sys_execve_count, &key, &initval, BPF_ANY);
+    bpf_map_update_elem(&sys_execve_count, &info, &initval, BPF_ANY);
     return 0;
   }
   
