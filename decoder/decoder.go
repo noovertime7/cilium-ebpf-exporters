@@ -57,6 +57,7 @@ func NewSet() (*Set, error) {
 			"string":       &String{},
 			"syscall":      &Syscall{},
 			"uint":         &UInt{},
+			"port":         &Port{},
 		},
 		cache: map[string]map[string][]string{},
 	}, nil

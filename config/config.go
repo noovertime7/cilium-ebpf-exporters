@@ -15,6 +15,7 @@ type Config struct {
 	Metrics     Metrics  `yaml:"metrics"`
 	Tracing     Tracing  `yaml:"tracing"`
 	Kaddrs      []string `yaml:"kaddrs"`
+	Interface   string   `yaml:"interface"`
 	BPFPath     string
 	ProgramType ProgramType `yaml:"program_type"`
 }

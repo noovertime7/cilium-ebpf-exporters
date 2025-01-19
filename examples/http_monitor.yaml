@@ -1,0 +1,24 @@
+name: requests
+program_type: socket_filter
+interface: ens33  # 指定要监控的网络接口
+metrics:
+  counters:
+    - name: requests
+      help: Total number of HTTP requests
+      labels:
+        - name: src_addr
+          size: 4
+          decoders:
+            - name: inet_ip
+        - name: dst_addr
+          size: 4
+          decoders:
+            - name: inet_ip
+        - name: src_port
+          size: 2
+          decoders:
+            - name: port
+        - name: dst_port
+          size: 2
+          decoders:
+            - name: port

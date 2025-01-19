@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"golang.org/x/sys/unix"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/noovertime7/cilium-ebpf-exporters/decoder"
 	"github.com/noovertime7/cilium-ebpf-exporters/util"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/vishvananda/netlink"
 )
 
 // Namespace to use for all metrics
@@ -198,7 +201,34 @@ func (e *Exporter) attachProgram(cfg config.Config, coll *ebpf.Collection) (map[
 			e.links[cfg.Name] = append(e.links[cfg.Name], l)
 
 		case config.SocketFilter:
-			return attached, fmt.Errorf("socket filter attachment not implemented yet")
+			list, err := netlink.LinkList()
+			if err != nil {
+				return attached, err
+			}
+
+			for _, v := range list {
+				index := v.Attrs().Index
+
+				sock, err := util.OpenRawSock(index)
+				if err != nil {
+					return attached, fmt.Errorf("failed to open socket %d: %v", index, err)
+				}
+
+				if err := unix.SetsockoptInt(sock, unix.SOL_SOCKET, unix.SO_ATTACH_BPF, prog.FD()); err != nil {
+					return attached, fmt.Errorf("failed to SetsockoptInt socket %d: %v", index, err)
+				}
+				file := os.NewFile(uintptr(sock), fmt.Sprintf("raw_sock_%s", cfg.Interface))
+				if file == nil {
+					return attached, fmt.Errorf("failed to open raw_sock_%s", cfg.Interface)
+				}
+
+				if err = link.AttachSocketFilter(file, prog); err != nil {
+					return attached, fmt.Errorf("failed to attach socket %d: %v", index, err)
+				}
+			}
+
+			attached[prog] = true
+			e.links[cfg.Name] = append(e.links[cfg.Name], l)
 
 		case config.CGroupSkb:
 			return attached, fmt.Errorf("cgroup skb attachment not implemented yet")
